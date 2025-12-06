@@ -1,0 +1,52 @@
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Temporary
+*.tmp
+.cache/
+
+# Testing
+.pytest_cache/
+coverage/
+
+# Build
+*.egg-info/
+dist/
+build/
+
+# FAISS Index (optional - if too large)
+faiss_index.bin

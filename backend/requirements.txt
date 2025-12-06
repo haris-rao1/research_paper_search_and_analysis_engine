@@ -1,0 +1,27 @@
+# Core Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Database
+pymongo>=4.6.0
+python-dotenv>=1.0.0
+
+# Data Processing
+requests>=2.31.0
+xmltodict>=0.13.0
+nltk>=3.8.1
+
+# Machine Learning & NLP
+sentence-transformers>=2.2.2
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# Topic Modeling
+gensim>=4.3.0
+
+# Clustering
+hdbscan>=0.8.33
+umap-learn>=0.5.5
+
+# Optional: Better embedding performance
+faiss-cpu>=1.7.4
