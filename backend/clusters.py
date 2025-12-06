@@ -1,15 +1,22 @@
-# clusters.py
-# Builds document clusters from stored embeddings, stores assignments and cluster metadata,
-# and exposes endpoints to list clusters and return UMAP points for visualization.
+# ============================================
+# clusters.py - Document Clustering
+# ============================================
+# This file groups similar documents together into "clusters".\n#
+# Think of it like:\n# - You have 1000 papers scattered everywhere
+# - Clustering automatically organizes them into groups (e.g., 20 clusters)
+# - Each cluster contains papers about similar topics
+# - Cluster 1 might be \"Neural Networks\", Cluster 2 might be \"Quantum Computing\", etc.
 #
-# Usage:
-#  POST /clusters/build?method=hdbscan&min_cluster_size=8&use_umap_pre_reduce=true
-#  GET  /clusters
-#  GET  /clusters/{cluster_id}/docs
-#  GET  /clusters/umap?limit=400
+# We use HDBSCAN algorithm - it's smart because:
+# 1. Automatically decides how many clusters to make
+# 2. Can handle noise (papers that don't fit anywhere)
+# 3. Works well with high-dimensional data (like embeddings)
 #
-# Requirements:
-#  pip install hdbscan scikit-learn umap-learn numpy
+# Endpoints:
+#  POST /clusters/build - Create clusters from embeddings
+#  GET  /clusters - List all clusters
+#  GET  /clusters/{id}/docs - See papers in a cluster
+#  GET  /clusters/umap - Get visualization coordinates
 
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, Dict, Any, List

@@ -185,19 +185,27 @@ def fetch_papers():
     }
 
 # ---------------------------------------------------------------------
-# Helpers: load & persist index (keeps the previous load_index_from_db)
+# Helpers: load & persist index with proper caching
 # ---------------------------------------------------------------------
-_index_cache: Dict[str, Any] = {}
+# Cache to store loaded index in memory (much faster than DB queries!)
+_index_cache: Dict[str, Any] = None  # Changed from {} to None
 
 def load_index_from_db(force_reload: bool = False) -> Tuple[Dict[str, Dict], Dict[int, int], int, float]:
     """
-    Load the inverted index from DB and return:
-      inverted_index (dict), doc_lengths (dict), total_docs, avg_doc_length
+    Load the inverted index from DB and cache it in memory for fast access.
+    
+    This is MUCH faster than loading from MongoDB every time!
+    - First call: Loads from DB (~1-2 seconds)
+    - Subsequent calls: Returns from cache (~instant!)
     """
     global _index_cache
-    if _index_cache and not force_reload:
+    
+    # If cache exists and we're not forcing reload, return cached data
+    if _index_cache is not None and not force_reload:
         return _index_cache["inv"], _index_cache["doc_lengths"], _index_cache["total_docs"], _index_cache["avgdl"]
 
+    # Load from MongoDB (this is the slow part - only happens once!)
+    print("Loading inverted index from database...")
     doc = inverted_index_collection.find_one({"_id": "inverted_index"})
     if not doc:
         return {}, {}, 0, 0.0
@@ -216,7 +224,9 @@ def load_index_from_db(force_reload: bool = False) -> Tuple[Dict[str, Dict], Dic
     total_docs = int(meta.get("total_docs", len(doc_lengths)))
     avgdl = float(meta.get("avg_doc_length", sum(doc_lengths.values()) / total_docs if total_docs else 0.0))
 
+    # Cache the index in memory for instant future access!
     _index_cache = {"inv": inv, "doc_lengths": doc_lengths, "total_docs": total_docs, "avgdl": avgdl}
+    print(f"✓ Index loaded: {len(inv)} terms, {total_docs} documents (cached in memory)")
     return inv, doc_lengths, total_docs, avgdl
 
 # ---------------------------------------------------------------------
@@ -360,6 +370,7 @@ def search(
     author: Optional[str] = None,
     hybrid_weights: Optional[str] = None
 ):
+    print(f"Search query: '{q}' using method: {method} top k={k}")
     processed = preprocessing({0: q})
     query_terms = processed.get(0, [])
     if not query_terms:

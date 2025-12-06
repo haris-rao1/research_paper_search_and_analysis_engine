@@ -18,10 +18,20 @@ router = APIRouter()
 clusters_collection = db["clusters_meta"]
 topics_collection = db["topics_lda"]
 
+# Cache for inverted index to avoid loading from DB every time
+_index_cache = None
+_centroids_cache = None
+
 def _load_cluster_centroids():
+    global _centroids_cache
+    if _centroids_cache is not None:
+        return _centroids_cache
+    
     meta = clusters_collection.find_one({"_id": "clusters_meta"})
     if not meta:
-        return [], np.zeros((0,0), dtype="float32")
+        _centroids_cache = ([], np.zeros((0,0), dtype="float32"))
+        return _centroids_cache
+    
     clusters = meta.get("clusters", [])
     ids = []
     centroids = []
@@ -31,18 +41,27 @@ def _load_cluster_centroids():
             continue
         ids.append(int(c["cluster_id"]))
         centroids.append(np.array(centroid, dtype="float32"))
+    
     if centroids:
         M = np.vstack(centroids)
         norms = np.linalg.norm(M, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         M = M / norms
-        return ids, M
-    return [], np.zeros((0,0), dtype="float32")
+        _centroids_cache = (ids, M)
+        return _centroids_cache
+    
+    _centroids_cache = ([], np.zeros((0,0), dtype="float32"))
+    return _centroids_cache
 
 def _load_full_inverted_index():
+    global _index_cache
+    if _index_cache is not None:
+        return _index_cache
+    
     doc = inverted_index_collection.find_one({"_id": "inverted_index"})
     if not doc:
         return {}, {}, 0, 0.0
+    
     inv = {}
     for item in doc.get("index", []):
         term = item[0]
@@ -50,11 +69,15 @@ def _load_full_inverted_index():
         postings_list = item[2]
         postings = {int(p[0]): p[1] for p in postings_list}
         inv[term] = {"df": df, "postings": postings}
+    
     meta = doc.get("meta", {})
     doc_lengths = {int(k): int(v) for k, v in meta.get("doc_lengths", {}).items()} if meta.get("doc_lengths") else {}
     total_docs = int(meta.get("total_docs", len(doc_lengths)))
     avgdl = float(meta.get("avg_doc_length", sum(doc_lengths.values()) / total_docs if total_docs else 0.0))
-    return inv, doc_lengths, total_docs, avgdl
+    
+    _index_cache = (inv, doc_lengths, total_docs, avgdl)
+    print(f"✓ Clustered search: Index loaded and cached ({len(inv)} terms, {total_docs} docs)")
+    return _index_cache
 
 def _build_restricted_index(full_inv: Dict[str, Dict], candidate_set: Set[int]):
     restricted = {}
@@ -112,11 +135,12 @@ def search_clustered(
 
     # 2) candidate set = docs in selected clusters (or all docs if cluster selection disabled)
     if cluster_mode and selected_clusters:
-        cand_set = set()
-        for cid in selected_clusters:
-            for d in papers_collection.find({"cluster_id": int(cid)}, {"doc_id":1}):
-                cand_set.add(int(d["doc_id"]))
-        candidate_doc_ids = list(cand_set)
+        # Bulk fetch all documents in selected clusters with single query
+        docs_cursor = papers_collection.find(
+            {"cluster_id": {"$in": selected_clusters}}, 
+            {"doc_id": 1}
+        )
+        candidate_doc_ids = [int(d["doc_id"]) for d in docs_cursor]
     else:
         candidate_doc_ids = [int(d["doc_id"]) for d in papers_collection.find({}, {"doc_id":1})]
 
@@ -160,9 +184,17 @@ def search_clustered(
                 combined[d] = (sb + st + sc) / 3.0
             ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)[:k]
 
-        # format results
+        # Bulk fetch documents for top results
+        top_doc_ids = [doc_id for doc_id, _ in ranked]
+        docs_cursor = papers_collection.find(
+            {"doc_id": {"$in": top_doc_ids}}, 
+            {"_id":0, "doc_id":1, "title":1, "summary":1, "authors":1, "published":1, "link":1, "cluster_id":1, "topic_lda_id":1}
+        )
+        docs_map = {d["doc_id"]: d for d in docs_cursor}
+        
+        # Format results maintaining rank order
         for doc_id, score in ranked:
-            doc = papers_collection.find_one({"doc_id": int(doc_id)}, {"_id":0, "doc_id":1, "title":1, "summary":1, "authors":1, "published":1, "link":1, "cluster_id":1, "topic_lda_id":1})
+            doc = docs_map.get(int(doc_id))
             if not doc:
                 continue
             results.append({

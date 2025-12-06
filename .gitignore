@@ -9,6 +9,7 @@ backend/.env
 frontend/.env.local
 **/.env
 **/.env.*
+BACKEND_COMPLETE_EXPLANATION.md
 
 # Python
 __pycache__/
