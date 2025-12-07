@@ -214,27 +214,21 @@ def search_clustered(
         q_emb = model.encode([q], convert_to_numpy=True).astype("float32")
         q_emb = l2_normalize_rows(q_emb)[0]
         
-        # Bulk fetch embeddings for all candidates
-        embeddings_map = {}
-        emb_cursor = embeddings_collection.find({"doc_id": {"$in": candidate_doc_ids}}, {"doc_id": 1, "embedding": 1})
-        embeddings_map = {d["doc_id"]: d["embedding"] for d in emb_cursor}
+        # Use cached embeddings (MUCH faster than MongoDB!)
+        from embeddings import load_embeddings_cache
+        all_doc_ids, all_embeddings = load_embeddings_cache()
         
-        # Fallback: bulk fetch from papers if embeddings missing
-        missing_ids = [did for did in candidate_doc_ids if did not in embeddings_map]
-        if missing_ids:
-            papers_cursor = papers_collection.find({"doc_id": {"$in": missing_ids}}, {"doc_id": 1, "embedding": 1})
-            for d in papers_cursor:
-                if d.get("embedding"):
-                    embeddings_map[d["doc_id"]] = d["embedding"]
+        # Build lookup map for fast access
+        embedding_lookup = {doc_id: all_embeddings[i] for i, doc_id in enumerate(all_doc_ids)}
         
-        # Build embedding matrix
+        # Filter to only candidate documents
         emb_list = []
         id_order = []
         for did in candidate_doc_ids:
-            vec = embeddings_map.get(did)
+            vec = embedding_lookup.get(did)
             if vec is None:
                 continue
-            emb_list.append(np.array(vec, dtype="float32"))
+            emb_list.append(vec)
             id_order.append(int(did))
         
         if not emb_list:

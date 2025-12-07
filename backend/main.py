@@ -27,6 +27,45 @@ from search_clustered import router as clustered_search_router
 
 app = FastAPI()
 
+# Pre-load models and indexes when server starts (for instant searches!)
+@app.on_event("startup")
+async def startup_event():
+    """
+    Pre-loads all heavy resources into memory at startup.
+    This eliminates delays on first search!
+    """
+    print("\n" + "="*60)
+    print("🚀 PRE-LOADING RESOURCES FOR INSTANT SEARCHES...")
+    print("="*60)
+    import time
+    
+    # 1. Load main inverted index
+    start = time.time()
+    inv, doc_lengths, total_docs, avgdl = load_index_from_db()
+    print(f"✅ Main index: {len(inv):,} terms ({time.time()-start:.2f}s)")
+    
+    # 2. Load cluster search index and centroids
+    from search_clustered import _load_full_inverted_index, _load_cluster_centroids
+    start = time.time()
+    _load_full_inverted_index()
+    _load_cluster_centroids()
+    print(f"✅ Cluster index & centroids cached ({time.time()-start:.2f}s)")
+    
+    # 3. Pre-load sentence-transformer model (THIS IS KEY FOR SEMANTIC SEARCH!)
+    from embeddings import get_model, load_embeddings_cache
+    start = time.time()
+    model = get_model()
+    print(f"✅ Sentence-transformer model loaded ({time.time()-start:.2f}s)")
+    
+    # 4. Pre-load all embeddings into cache (CRITICAL FOR FAST SEMANTIC SEARCH!)
+    start = time.time()
+    load_embeddings_cache()
+    print(f"✅ All embeddings cached ({time.time()-start:.2f}s)")
+    
+    print("="*60)
+    print("🎯 ALL RESOURCES READY - INSTANT SEARCHES ENABLED!")
+    print("="*60 + "\n")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

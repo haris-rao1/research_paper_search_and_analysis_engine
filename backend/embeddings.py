@@ -28,11 +28,37 @@ _FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "faiss_index.bin")
 _BATCH_SIZE = int(os.getenv("EMB_BATCH", "64"))
 
 _model = None
+_embeddings_cache = None  # Cache for all embeddings
+
 def get_model():
     global _model
     if _model is None:
         _model = SentenceTransformer(_MODEL_NAME)
     return _model
+
+def load_embeddings_cache():
+    """Load all embeddings into memory once for fast semantic search"""
+    global _embeddings_cache
+    if _embeddings_cache is not None:
+        return _embeddings_cache
+    
+    print("Loading embeddings into cache...")
+    cursor = embeddings_collection.find({}, {"doc_id": 1, "embedding": 1})
+    doc_ids = []
+    emb_list = []
+    for d in cursor:
+        doc_ids.append(int(d["doc_id"]))
+        emb_list.append(d["embedding"])
+    
+    if emb_list:
+        emb_matrix = np.array(emb_list, dtype="float32")
+        emb_matrix = l2_normalize_rows(emb_matrix)
+        _embeddings_cache = (doc_ids, emb_matrix)
+        print(f"✓ Cached {len(doc_ids)} embeddings")
+    else:
+        _embeddings_cache = ([], np.zeros((0, 384), dtype="float32"))
+    
+    return _embeddings_cache
 
 def l2_normalize_rows(x: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(x, axis=1, keepdims=True)
@@ -174,42 +200,61 @@ def semantic_search(q: str, k: int = Query(10, gt=0, le=200)):
         D, I = index.search(q_emb, k)
         D = D[0].tolist()
         I = I[0].tolist()
+        
+        # Collect valid doc_ids and their scores
+        valid_results = []
         for score, idx in zip(D, I):
             if idx < 0 or idx >= len(doc_ids):
                 continue
             doc_id = int(doc_ids[idx])
-            doc = papers_collection.find_one({"doc_id": doc_id}, {"_id": 0, "doc_id": 1, "title": 1, "summary": 1, "authors": 1, "published": 1, "link": 1})
+            valid_results.append((doc_id, float(score)))
+        
+        # Bulk fetch all documents at once
+        result_doc_ids = [doc_id for doc_id, _ in valid_results]
+        docs_cursor = papers_collection.find(
+            {"doc_id": {"$in": result_doc_ids}},
+            {"_id": 0, "doc_id": 1, "title": 1, "summary": 1, "authors": 1, "published": 1, "link": 1}
+        )
+        docs_map = {doc["doc_id"]: doc for doc in docs_cursor}
+        
+        # Build results in order
+        for doc_id, score in valid_results:
+            doc = docs_map.get(doc_id)
             if not doc:
                 continue
             results.append({
                 "doc_id": doc_id,
                 "title": doc.get("title"),
                 "snippet": (doc.get("summary") or "")[:300],
-                "score": float(score),
+                "score": score,
                 "published": doc.get("published"),
                 "authors": doc.get("authors"),
                 "link": doc.get("link")
             })
         return {"query": q, "k": k, "method": "semantic", "results": results}
 
-    # fallback: brute-force using embeddings stored in Mongo
-    cursor = embeddings_collection.find({}, {"doc_id": 1, "embedding": 1})
-    doc_ids_b = []
-    emb_list = []
-    for d in cursor:
-        doc_ids_b.append(int(d["doc_id"]))
-        emb_list.append(d["embedding"])
-    if not emb_list:
+    # fallback: use cached embeddings (FAST!)
+    doc_ids_b, emb_matrix = load_embeddings_cache()
+    if len(doc_ids_b) == 0:
         return {"query": q, "k": k, "method": "semantic", "results": []}
-    emb_matrix = np.array(emb_list, dtype="float32")
-    # ensure normalized
-    emb_matrix = l2_normalize_rows(emb_matrix)
+    
     scores = (emb_matrix @ q_emb[0])  # dot product
     topk_idx = np.argsort(-scores)[:k]
-    for idx in topk_idx:
-        doc_id = int(doc_ids_b[idx])
-        score = float(scores[idx])
-        doc = papers_collection.find_one({"doc_id": doc_id}, {"_id": 0, "doc_id": 1, "title": 1, "summary": 1, "authors": 1, "published": 1, "link": 1})
+    
+    # Collect top k doc_ids and scores
+    top_results = [(int(doc_ids_b[idx]), float(scores[idx])) for idx in topk_idx]
+    result_doc_ids = [doc_id for doc_id, _ in top_results]
+    
+    # Bulk fetch all documents at once (10x faster than loop!)
+    docs_cursor = papers_collection.find(
+        {"doc_id": {"$in": result_doc_ids}},
+        {"_id": 0, "doc_id": 1, "title": 1, "summary": 1, "authors": 1, "published": 1, "link": 1}
+    )
+    docs_map = {doc["doc_id"]: doc for doc in docs_cursor}
+    
+    # Build results maintaining rank order
+    for doc_id, score in top_results:
+        doc = docs_map.get(doc_id)
         if not doc:
             continue
         results.append({
